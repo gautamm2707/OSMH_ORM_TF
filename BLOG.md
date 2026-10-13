@@ -1,40 +1,65 @@
-# Onboard in OSMH with OCI Resource Manager
+# Automate OS Management Hub Onboarding with OCI Resource Manager
 
 ## Introduction
 
-**Onboard in OSMH** automates OCI instance onboarding to OS Management Hub. Select instances in OCI Resource Manager, deploy the automation, and let an OCI Function check their registration daily at your chosen **UTC time**.
+Registering Compute instances with Oracle OS Management Hub (OSMH) is the first step toward centralized operating system management. **Onboard in OSMH** provides a guided OCI Console workflow to deploy the automation, select instances, and schedule daily registration checks—without running Terraform locally.
 
-## Use case
+## Problem Statement and Use Case
 
-A platform team manages instances across development, testing, and production compartments in multiple regions. This solution provides a consistent onboarding process: it scans the selected compartment tree, discovers tagged instances, excludes identified OKE workers, and creates or reuses OSMH registration profiles and management groups. Future instances enter the workflow when the same opt-in tag is applied.
+As teams create instances across compartments, manual registration can leave systems outside central management. Repeating agent, registration profile, and access configuration also adds operational work.
+
+This solution helps a platform team onboard existing eligible instances and automatically discover newly created instances in a selected compartment tree. It automates registration; patch installation and patch schedules are configured separately in OSMH.
 
 ## Prerequisites
 
-- **OCI access:** Permission to manage Resource Manager stacks and jobs, Functions, schedules, networking, logging, defined tags and compartment tag defaults, dynamic groups, and tenancy IAM policies. The stack reuses an existing Function or DevOps service log for the same OCI source instead of creating a duplicate. Cloud builds also require DevOps, Container Registry, and Notifications permissions.
-- **Deployment region:** A commercial OCI tenancy with an active region subscription, required services, and available quotas. Choose the subscribed region from the OCI Console region menu before opening the deployment link.
-- **Function build:** An OCI Vault secret containing a GitHub access token that can read the source repository. The secret can be stored in a compartment separate from the deployment compartment. The published stack pins the reviewed source commit automatically, then builds and delivers the Function image.
-- **Build resource principals:** The stack creates exact-resource dynamic groups for its DevOps pipeline and GitHub connection. OCI requires tenancy-scoped `devops-family` and `secret-family` grants for external source retrieval; review these IAM statements before Apply. Apply validates the PAT and pinned source, polls the OCI connection, and retries transient source-download IAM failures within a bounded timeout.
-- **Networking:** Suitable regional subnets with outbound HTTPS and DNS access, or permission to create the supplied private network and NAT gateway.
-- **Eligible instances:** Running instances with a supported OS/image, a working Oracle Cloud Agent with the OSMH plugin available, and guest connectivity to OSMH.
-- **Tags:** Permission to inspect active tag namespaces across the tenancy and create the `managedby` key or compartment tag default when missing. An active namespace matching the entered name is reused automatically.
+Before opening the deployment link, prepare the following:
 
-## Deploy and onboard
+| Requirement | What you need |
+| --- | --- |
+| **OCI tenancy and region** | A commercial OCI tenancy with an active subscription to the deployment region, access to the required services, and available resource quotas. |
+| **Permissions** | Access to create Resource Manager stacks and jobs, Functions, DevOps resources, OCIR repositories, schedules, Notifications, logging, networking, tags, and tag defaults. An administrator must also authorize dynamic groups and tenancy IAM policies. See the [deployment guide](RESOURCE_MANAGER.md#cloud-build-prerequisites) for build permissions. |
+| **GitHub token in OCI Vault** | An active GitHub personal access token that can read this repository, stored as a Vault secret in the deployment region. Store the raw token as the secret value. Have its compartment available for selection; it can differ from the deployment compartment. |
+| **Compute instances** | Running instances with an OSMH-supported operating system/image, a working Oracle Cloud Agent, and the OSMH Agent plugin available. Verify the [OSMH service prerequisites](https://docs.oracle.com/en-us/iaas/osmh/doc/getstarted.htm), including required network endpoints. |
+| **Function networking** | Permission to create the supplied private VCN, subnet, and NAT gateway, or an existing regional subnet with outbound HTTPS and DNS connectivity. |
+
+OCI DevOps builds and publishes the Function image using IAM. You do not need to supply an OCIR authentication token or build an image locally.
+
+## Architecture
+
+```mermaid
+flowchart TD
+    A[Onboard in OSMH link] --> B[OCI Resource Manager: Plan and Apply]
+    G[GitHub source and Vault token] --> C[OCI DevOps build]
+    B --> C
+    C --> D[Private OCIR image]
+    D --> F[OCI Function]
+    B -->|Initial onboarding invocation| F
+    S[Daily Resource Scheduler: UTC] --> F
+    F -->|Discover tagged eligible instances| T[Selected compartment and descendants]
+    F -->|Configure registration profiles and agent| H[OS Management Hub]
+    N[New Compute instances] -->|Compartment tag default| T
+```
+
+The initial run tags eligible instances chosen during deployment. Daily runs check tagged instances in the selected compartment tree and deployment region. Bulk discovery excludes stopped, identified OKE, unsupported, and already registered instances.
+
+## Deploy in Five Steps
 
 **[Onboard in OSMH](https://cloud.oracle.com/resourcemanager/stacks/create?zipUrl=https%3A%2F%2Fgithub.com%2Fgautamm2707%2FOSMH_ORM_TF%2Fraw%2Frefs%2Fheads%2Fmain%2Fresource-manager%2Fosmh-resource-manager.zip)**
 
-The link opens **Create Stack** in your OCI Console session, or prompts you to sign in, with the published Resource Manager package selected. The package contains the new Console form at its root.
+1. **Open the stack wizard.** Sign in to OCI and switch the Console to your intended deployment region before using the link. On **Stack information**, choose a stack name and storage compartment. The link supplies the Terraform ZIP automatically.
+2. **Choose the onboarding scope.** On **Configure variables**, select the same region and the **Deployment and onboarding compartment**. This compartment can differ from the stack's storage compartment. Select **Onboard all eligible instances** for the full compartment tree, or choose individual instances in the selected compartment.
+3. **Configure the Function and schedule.** Create a Function application and network, or reuse an application by entering its OCID. For a new application using existing networking, select its VCN and regional subnet. Enable daily reconciliation and choose the start time in **UTC**.
+4. **Select authentication and tags.** Under **Function build authentication**, choose the Vault secret's compartment and the GitHub token secret. Enter the tag namespace name; an active exact-name match is reused, otherwise a namespace with a unique suffix is created. Keep instance IAM creation enabled unless equivalent permissions already exist.
+5. **Review and deploy.** Create the stack, run **Plan**, review the proposed resources and IAM policies, then run **Apply**. The stack builds the image, creates the Function and schedule, and starts the initial onboarding invocation.
 
-1. Choose a subscribed region in the OCI Console, then select the **Deployment and onboarding compartment** independently from the compartment that stores the stack. Choose **Onboard all eligible instances** to scan its full compartment tree, or select individual Compute instances.
-2. Create a Function application, or enter an existing application’s OCID. For a new application, create networking or select an existing **VCN** and **regional subnet**.
-3. Choose the daily **UTC start time**. Under **Function build authentication**, select the compartment containing the GitHub token secret, then select the secret. The published source commit is populated automatically and cannot be changed in the form.
-4. Create the stack, review **Plan**, and run **Apply**. A detached job applies the stack's opt-in tag to the selected instances and starts onboarding. Use the **`instance_opt_in_tag`** output when tagging future instances.
+The individual Compute picker lists one compartment and cannot filter eligibility. Use bulk onboarding for recursive discovery; runtime checks validate individual selections. An existing Function application must be active, use `GENERIC_X86`, and belong to the selected region and compartment.
 
-Each new stack receives a unique ID for its Function, network, and build resources. The tag namespace is reused when its entered name already exists; otherwise the stack creates a uniquely suffixed namespace. The stack adds `managedby=osmanagementhub` as a tag default on the selected compartment. OCI applies it to future resources in that compartment and its descendants; the scheduler processes tagged Compute instances and continues to exclude OKE, stopped, unsupported, and already registered instances. Tag defaults affect new resources only, so **Onboard all eligible instances** handles existing Compute instances. Retry a failed Apply in the same stack to retain resources already created.
+## Verify and Onboard Future Instances
 
-OCI’s native Compute picker lists one compartment at a time, offers no eligibility filters, and owns its `<No value>` row. The separate **Onboard all eligible instances** control provides bulk selection across the compartment tree. Apply and the Function enforce state, OKE, OS, scope, and OSMH-registration checks. Resource Manager also has no native Function application picker, so existing applications use an OCID field. See [Oracle’s schema documentation](https://docs.oracle.com/en-us/iaas/Content/ResourceManager/Concepts/terraformconfigresourcemanager_topic-schema.htm).
+After Apply, open **OS Management Hub → Instances** in the deployment region and confirm registration. Check Function logs if instances are missing or pending. **Apply success confirms deployment and acceptance of the initial invocation; registration completes asynchronously.**
 
-An OCIR `AUTH_TOKEN` is not requested. OCI DevOps delivers the image with a resource principal, and OCI Functions pulls and invokes it through IAM. This avoids placing a long-lived registry credential in Resource Manager variables or state.
+The stack creates or reuses a compartment tag default with the value `managedby=osmanagementhub` in the selected namespace. Future resources in that compartment and its descendants inherit the tag; the next scheduled run evaluates eligible tagged Compute instances. Tag defaults do not update existing resources, which is why initial bulk or individual selection is required.
 
-Check Function logs and OSMH instance status to confirm registration. Pending registrations are checked again on later runs. Patch installation and patch schedules require separate configuration.
+If deployment fails, inspect the Resource Manager job and DevOps build logs, correct the reported issue, and retry **Apply in the same stack**. Detailed recovery steps are in the [deployment guide](RESOURCE_MANAGER.md#recovery-and-updates).
 
-See the [deployment guide](RESOURCE_MANAGER.md) for packaging, configuration, and updates.
+**Source and deployment package:** [OSMH_ORM_TF on GitHub](https://github.com/gautamm2707/OSMH_ORM_TF).
