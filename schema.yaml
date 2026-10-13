@@ -73,7 +73,7 @@ variables:
     visible: false
   source_commit:
     type: string
-    default: 0000000000000000000000000000000000000000
+    default: b6357afcb101ee3d6009bfb2d6d943bdfb7285a0
     visible: false
   github_token_secret_compartment_ocid:
     type: oci:identity:compartment:id
